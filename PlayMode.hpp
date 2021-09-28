@@ -1,5 +1,7 @@
 #include "Mode.hpp"
+#include "ColorTextureProgram.hpp"
 
+#include "GL.hpp"
 #include "Scene.hpp"
 #include "Sound.hpp"
 
@@ -9,7 +11,7 @@
 #include <deque>
 
 struct PlayMode : Mode {
-	PlayMode();
+	PlayMode(char* file);
 	virtual ~PlayMode();
 
 	//functions called by main loop:
@@ -20,29 +22,57 @@ struct PlayMode : Mode {
 	//----- game state -----
 
 	//input tracking:
-	struct Button {
-		uint8_t downs = 0;
-		uint8_t pressed = 0;
-	} left, right, down, up;
+	bool pressed[9] = { false };
 
-	//local copy of the game scene (so code can change it during gameplay):
-	Scene scene;
+	int score = 0;
+	uint32_t perfect = 0;
+	uint32_t good = 0;
+	uint32_t bad = 0;
 
-	//hexapod leg to wobble:
-	Scene::Transform *hip = nullptr;
-	Scene::Transform *upper_leg = nullptr;
-	Scene::Transform *lower_leg = nullptr;
-	glm::quat hip_base_rotation;
-	glm::quat upper_leg_base_rotation;
-	glm::quat lower_leg_base_rotation;
-	float wobble = 0.0f;
+	std::deque<float> beats;
+	std::deque<float> active_beats;
+	std::deque<int> keymap; //maps keys to active beats. active_beat[i] is on key keymap[i]
+	std::vector<int> keys = {0, 1, 2, 3, 4, 5, 6, 7, 8}; //available keys to pick from
+	glm::u8vec4 keycolors[9] = { glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0), 
+								glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0), 
+								glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0), glm::u8vec4(255, 255, 255, 0) };
+	float timer = 0.0f;
 
-	glm::vec3 get_leg_tip_position();
+	glm::vec2 playable_area_dim = glm::vec2(10.0f, 10.0f);
+	float offset = 0.5f;
+	glm::vec2 button_dim = glm::vec2(3.0f, 3.0f);
 
-	//music coming from the tip of the leg (as a demonstration):
-	std::shared_ptr< Sound::PlayingSample > leg_tip_loop;
+	//music playing:
+	char* filename;
+	std::shared_ptr< Sound::PlayingSample > music;
 	
-	//camera:
-	Scene::Camera *camera = nullptr;
+	//----- opengl assets / helpers ------
+
+	//draw functions will work on vectors of vertices, defined as follows:
+	struct Vertex {
+		Vertex(glm::vec3 const& Position_, glm::u8vec4 const& Color_, glm::vec2 const& TexCoord_) :
+			Position(Position_), Color(Color_), TexCoord(TexCoord_) { }
+		glm::vec3 Position;
+		glm::u8vec4 Color;
+		glm::vec2 TexCoord;
+	};
+	static_assert(sizeof(Vertex) == 4 * 3 + 1 * 4 + 4 * 2, "PlayMode::Vertex should be packed");
+
+	//Shader program that draws transformed, vertices tinted with vertex colors:
+	ColorTextureProgram color_texture_program;
+
+	//Buffer used to hold vertex data during drawing:
+	GLuint vertex_buffer = 0;
+
+	//Vertex Array Object that maps buffer locations to color_texture_program attribute locations:
+	GLuint vertex_buffer_for_color_texture_program = 0;
+
+	//Solid white texture:
+	GLuint white_tex = 0;
+
+	//matrix that maps from clip coordinates to court-space coordinates:
+	glm::mat3x2 clip_to_court = glm::mat3x2(1.0f);
+	// computed in draw() as the inverse of OBJECT_TO_CLIP
+	// (stored here so that the mouse handling code can use it to position the paddle)
 
 };

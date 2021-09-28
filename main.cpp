@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <memory>
 #include <algorithm>
+#include <exception>
 
 #ifdef _WIN32
 extern "C" { uint32_t GetACP(); }
@@ -66,7 +67,7 @@ int main(int argc, char **argv) {
 
 	//create window:
 	SDL_Window *window = SDL_CreateWindow(
-		"gp21 game3: require sound", //TODO: remember to set a title for your game!
+		"gp21 game3: RNGubeat: generative random not-jubeat-osu-hybrid", //TODO: remember to set a title for your game!
 		SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
 		1280, 720, //TODO: modify window size if you'd like
 		SDL_WINDOW_OPENGL
@@ -105,6 +106,10 @@ int main(int argc, char **argv) {
 	//Hide mouse cursor (note: showing can be useful for debugging):
 	//SDL_ShowCursor(SDL_DISABLE);
 
+	if (argc > 2) throw std::runtime_error("Usage: game.exe <path_to_.wav_or_.opus_file>");
+	char* musicfile = "Bit Bit Loop.wav";
+	if (argc == 2) musicfile = argv[1];
+
 	//------------ init sound --------------
 	Sound::init();
 
@@ -112,7 +117,7 @@ int main(int argc, char **argv) {
 	call_load_functions();
 
 	//------------ create game mode + make current --------------
-	Mode::set_current(std::make_shared< PlayMode >());
+	Mode::set_current(std::make_shared< PlayMode >(musicfile));
 
 	//------------ main loop ------------
 

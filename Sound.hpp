@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <vector>
+#include <deque>
 #include <string>
 #include <cmath>
 
@@ -122,6 +123,8 @@ std::shared_ptr< PlayingSample > loop_3D(
 	glm::vec3 const &position,
 	float half_volume_radius = std::numeric_limits< float >::infinity()
 );
+
+std::deque<float> parse_beats(Sample const &s);
 
 //Listener controls the panning of "3D" samples (ones played using the "position" version of the play functions):
 struct Listener {

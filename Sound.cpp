@@ -9,6 +9,8 @@
 #include <exception>
 #include <iostream>
 #include <algorithm>
+#include <vector>
+#include <deque>
 
 //local (to this file) data used by the audio system:
 namespace {
@@ -133,6 +135,40 @@ std::shared_ptr< Sound::PlayingSample > Sound::loop_3D(Sample const &sample, flo
 	return playing_sample;
 }
 
+
+//Naive beat getter. Gets adaptive threshold per some number of samples using min and max and thresholds samples on intensity
+//Pushes time of beat into a vector and returns this vector
+//Yes I know I should use a Fourier transform and then a filter but I tried to see if I could implement with stupider code
+//And I don't want to implement FFT
+std::deque<float> Sound::parse_beats(Sample const &s) {
+	std::deque<float> result;
+	float min;
+	float max;
+	float threshold = 0;
+	int interval = -1;
+	size_t bufsize = AUDIO_RATE * 10;
+	for (uint32_t i = 0; i < s.data.size(); ++i) {
+		//update threshold every MIX_SAMPLES samples
+		if (interval < (int)(i / bufsize)) {
+			interval = (int)(i / bufsize);
+			if ((interval + 1) * bufsize > s.data.size()) {
+				min = *std::min_element(s.data.begin() + (interval * bufsize), s.data.end());
+				max = *std::max_element(s.data.begin() + (interval * bufsize), s.data.end());
+			}
+			else {
+				min = *std::min_element(s.data.begin() + (interval * bufsize), s.data.begin() + ((interval + 1) * bufsize));
+				max = *std::max_element(s.data.begin() + (interval * bufsize), s.data.begin() + ((interval + 1) * bufsize));
+			}
+			threshold = min + 0.9f * (max - min);
+		}
+		if (interval == -1) throw std::runtime_error("Failed to parse beat information from sound data.");
+		if (s.data[i] > threshold) {
+			result.push_back((float)i / (float)AUDIO_RATE);
+			i += AUDIO_RATE/4;
+		}
+	}
+	return result;
+}
 
 void Sound::stop_all_samples() {
 	lock();
@@ -398,6 +434,7 @@ void mix_audio(void *, Uint8 *buffer_, int len) {
 			buffer[i].l += pan.l * playing_sample.data[playing_sample.i];
 			buffer[i].r += pan.r * playing_sample.data[playing_sample.i];
 
+			//if (playing_sample.data[playing_sample.i] > playing_sample.threshold) std::cout << playing_sample.data[playing_sample.i];
 			//update position in sample:
 			playing_sample.i += 1;
 			if (playing_sample.i == playing_sample.data.size()) {

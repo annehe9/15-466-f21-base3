@@ -1,9 +1,6 @@
 #include "PlayMode.hpp"
 
-#include "LitColorTextureProgram.hpp"
-
 #include "DrawLines.hpp"
-#include "Mesh.hpp"
 #include "Load.hpp"
 #include "gl_errors.hpp"
 #include "data_path.hpp"
@@ -11,200 +8,377 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <random>
+#include <deque>
+#include <vector>
+#include <iterator>
+#include <time.h>
 
-GLuint hexapod_meshes_for_lit_color_texture_program = 0;
-Load< MeshBuffer > hexapod_meshes(LoadTagDefault, []() -> MeshBuffer const * {
-	MeshBuffer const *ret = new MeshBuffer(data_path("hexapod.pnct"));
-	hexapod_meshes_for_lit_color_texture_program = ret->make_vao_for_program(lit_color_texture_program->program);
-	return ret;
-});
+//Load< Sound::Sample > loadmusic(LoadTagDefault, []() -> Sound::Sample const * {
+	//return 
+//});
 
-Load< Scene > hexapod_scene(LoadTagDefault, []() -> Scene const * {
-	return new Scene(data_path("hexapod.scene"), [&](Scene &scene, Scene::Transform *transform, std::string const &mesh_name){
-		Mesh const &mesh = hexapod_meshes->lookup(mesh_name);
+PlayMode::PlayMode(char* file) {
+	filename = file;
 
-		scene.drawables.emplace_back(transform);
-		Scene::Drawable &drawable = scene.drawables.back();
+	//get beat info
+	beats = Sound::parse_beats(*(new Sound::Sample(data_path(filename))));
 
-		drawable.pipeline = lit_color_texture_program_pipeline;
+	//taken from game0
+	//----- allocate OpenGL resources -----
+	{ //vertex buffer:
+		glGenBuffers(1, &vertex_buffer);
+		//for now, buffer will be un-filled.
 
-		drawable.pipeline.vao = hexapod_meshes_for_lit_color_texture_program;
-		drawable.pipeline.type = mesh.type;
-		drawable.pipeline.start = mesh.start;
-		drawable.pipeline.count = mesh.count;
-
-	});
-});
-
-Load< Sound::Sample > dusty_floor_sample(LoadTagDefault, []() -> Sound::Sample const * {
-	return new Sound::Sample(data_path("dusty-floor.opus"));
-});
-
-PlayMode::PlayMode() : scene(*hexapod_scene) {
-	//get pointers to leg for convenience:
-	for (auto &transform : scene.transforms) {
-		if (transform.name == "Hip.FL") hip = &transform;
-		else if (transform.name == "UpperLeg.FL") upper_leg = &transform;
-		else if (transform.name == "LowerLeg.FL") lower_leg = &transform;
+		GL_ERRORS(); //PARANOIA: print out any OpenGL errors that may have happened
 	}
-	if (hip == nullptr) throw std::runtime_error("Hip not found.");
-	if (upper_leg == nullptr) throw std::runtime_error("Upper leg not found.");
-	if (lower_leg == nullptr) throw std::runtime_error("Lower leg not found.");
 
-	hip_base_rotation = hip->rotation;
-	upper_leg_base_rotation = upper_leg->rotation;
-	lower_leg_base_rotation = lower_leg->rotation;
+	{ //vertex array mapping buffer for color_texture_program:
+		//ask OpenGL to fill vertex_buffer_for_color_texture_program with the name of an unused vertex array object:
+		glGenVertexArrays(1, &vertex_buffer_for_color_texture_program);
 
-	//get pointer to camera for convenience:
-	if (scene.cameras.size() != 1) throw std::runtime_error("Expecting scene to have exactly one camera, but it has " + std::to_string(scene.cameras.size()));
-	camera = &scene.cameras.front();
+		//set vertex_buffer_for_color_texture_program as the current vertex array object:
+		glBindVertexArray(vertex_buffer_for_color_texture_program);
 
-	//start music loop playing:
-	// (note: position will be over-ridden in update())
-	leg_tip_loop = Sound::loop_3D(*dusty_floor_sample, 1.0f, get_leg_tip_position(), 10.0f);
+		//set vertex_buffer as the source of glVertexAttribPointer() commands:
+		glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+
+		//set up the vertex array object to describe arrays of PongMode::Vertex:
+		glVertexAttribPointer(
+			color_texture_program.Position_vec4, //attribute
+			3, //size
+			GL_FLOAT, //type
+			GL_FALSE, //normalized
+			sizeof(Vertex), //stride
+			(GLbyte*)0 + 0 //offset
+		);
+		glEnableVertexAttribArray(color_texture_program.Position_vec4);
+		//[Note that it is okay to bind a vec3 input to a vec4 attribute -- the w component will be filled with 1.0 automatically]
+
+		glVertexAttribPointer(
+			color_texture_program.Color_vec4, //attribute
+			4, //size
+			GL_UNSIGNED_BYTE, //type
+			GL_TRUE, //normalized
+			sizeof(Vertex), //stride
+			(GLbyte*)0 + 4 * 3 //offset
+		);
+		glEnableVertexAttribArray(color_texture_program.Color_vec4);
+
+		glVertexAttribPointer(
+			color_texture_program.TexCoord_vec2, //attribute
+			2, //size
+			GL_FLOAT, //type
+			GL_FALSE, //normalized
+			sizeof(Vertex), //stride
+			(GLbyte*)0 + 4 * 3 + 4 * 1 //offset
+		);
+		glEnableVertexAttribArray(color_texture_program.TexCoord_vec2);
+
+		//done referring to vertex_buffer, so unbind it:
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+		//done setting up vertex array object, so unbind it:
+		glBindVertexArray(0);
+
+		GL_ERRORS(); //PARANOIA: print out any OpenGL errors that may have happened
+	}
+
+	{ //solid white texture:
+		//ask OpenGL to fill white_tex with the name of an unused texture object:
+		glGenTextures(1, &white_tex);
+
+		//bind that texture object as a GL_TEXTURE_2D-type texture:
+		glBindTexture(GL_TEXTURE_2D, white_tex);
+
+		//upload a 1x1 image of solid white to the texture:
+		glm::uvec2 size = glm::uvec2(1, 1);
+		std::vector< glm::u8vec4 > data(size.x * size.y, glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.x, size.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, data.data());
+
+		//set filtering and wrapping parameters:
+		//(it's a bit silly to mipmap a 1x1 texture, but I'm doing it because you may want to use this code to load different sizes of texture)
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+		//since texture uses a mipmap and we haven't uploaded one, instruct opengl to make one for us:
+		glGenerateMipmap(GL_TEXTURE_2D);
+
+		//Okay, texture uploaded, can unbind it:
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		GL_ERRORS(); //PARANOIA: print out any OpenGL errors that may have happened
+	}
+	srand((unsigned int)time(NULL));
+
+	//start music:
+	music = Sound::play(*(new Sound::Sample(data_path(filename))), 1.0f, 1.0f);
 }
 
 PlayMode::~PlayMode() {
+	//----- free OpenGL resources -----
+	glDeleteBuffers(1, &vertex_buffer);
+	vertex_buffer = 0;
+
+	glDeleteVertexArrays(1, &vertex_buffer_for_color_texture_program);
+	vertex_buffer_for_color_texture_program = 0;
+
+	glDeleteTextures(1, &white_tex);
+	white_tex = 0;
 }
 
 bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
 
 	if (evt.type == SDL_KEYDOWN) {
-		if (evt.key.keysym.sym == SDLK_ESCAPE) {
-			SDL_SetRelativeMouseMode(SDL_FALSE);
+		if (evt.key.keysym.sym == SDLK_q || evt.key.keysym.sym == SDLK_KP_7) {
+			pressed[0] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_a) {
-			left.downs += 1;
-			left.pressed = true;
+		} else if (evt.key.keysym.sym == SDLK_w || evt.key.keysym.sym == SDLK_KP_8) {
+			pressed[1] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_d) {
-			right.downs += 1;
-			right.pressed = true;
+		} else if (evt.key.keysym.sym == SDLK_e || evt.key.keysym.sym == SDLK_KP_9) {
+			pressed[2] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_w) {
-			up.downs += 1;
-			up.pressed = true;
+		} else if (evt.key.keysym.sym == SDLK_a || evt.key.keysym.sym == SDLK_KP_4) {
+			pressed[3] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_s) {
-			down.downs += 1;
-			down.pressed = true;
+		} else if (evt.key.keysym.sym == SDLK_s || evt.key.keysym.sym == SDLK_KP_5) {
+			pressed[4] = true;
 			return true;
-		}
-	} else if (evt.type == SDL_KEYUP) {
-		if (evt.key.keysym.sym == SDLK_a) {
-			left.pressed = false;
+		} else if (evt.key.keysym.sym == SDLK_d || evt.key.keysym.sym == SDLK_KP_6) {
+			pressed[5] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_d) {
-			right.pressed = false;
+		} else if (evt.key.keysym.sym == SDLK_z || evt.key.keysym.sym == SDLK_KP_1) {
+			pressed[6] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_w) {
-			up.pressed = false;
+		} else if (evt.key.keysym.sym == SDLK_x || evt.key.keysym.sym == SDLK_KP_2) {
+			pressed[7] = true;
 			return true;
-		} else if (evt.key.keysym.sym == SDLK_s) {
-			down.pressed = false;
+		} else if (evt.key.keysym.sym == SDLK_c || evt.key.keysym.sym == SDLK_KP_3) {
+			pressed[8] = true;
 			return true;
 		}
 	} else if (evt.type == SDL_MOUSEBUTTONDOWN) {
-		if (SDL_GetRelativeMouseMode() == SDL_FALSE) {
-			SDL_SetRelativeMouseMode(SDL_TRUE);
-			return true;
-		}
-	} else if (evt.type == SDL_MOUSEMOTION) {
-		if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
-			glm::vec2 motion = glm::vec2(
-				evt.motion.xrel / float(window_size.y),
-				-evt.motion.yrel / float(window_size.y)
-			);
-			camera->transform->rotation = glm::normalize(
-				camera->transform->rotation
-				* glm::angleAxis(-motion.x * camera->fovy, glm::vec3(0.0f, 1.0f, 0.0f))
-				* glm::angleAxis(motion.y * camera->fovy, glm::vec3(1.0f, 0.0f, 0.0f))
-			);
-			return true;
-		}
+		//std::cout << evt.motion.x << ", " << evt.motion.y << "\n";
+		glm::vec2 clip_mouse = glm::vec2(
+			(evt.motion.x + 0.5f) / window_size.x * 2.0f - 1.0f,
+			(evt.motion.y + 0.5f) / window_size.y * -2.0f + 1.0f
+		);
+		glm::vec2 mouse_pos = (clip_to_court * glm::vec3(clip_mouse, 1.0f));
+		int col = (int)((mouse_pos.x + playable_area_dim.x - offset) / (offset + 2 * button_dim.x));
+		int row = (int)((mouse_pos.y - playable_area_dim.y + offset) / -(offset + 2 * button_dim.y));
+		//std::cout << "col: " << col;
+		//std::cout << " row: " << row << "\n";
+		pressed[row * 3 + col] = true;
 	}
-
 	return false;
 }
 
 void PlayMode::update(float elapsed) {
+	//update timer
+	timer += elapsed;
 
-	//slowly rotates through [0,1):
-	wobble += elapsed / 10.0f;
-	wobble -= std::floor(wobble);
+	//debug
+	/*
+	while (timer >= beats.front()) {
+		std::cout << beats.front() << "\n";
+		beats.pop_front();
+	}
+	*/
 
-	hip->rotation = hip_base_rotation * glm::angleAxis(
-		glm::radians(5.0f * std::sin(wobble * 2.0f * float(M_PI))),
-		glm::vec3(0.0f, 1.0f, 0.0f)
-	);
-	upper_leg->rotation = upper_leg_base_rotation * glm::angleAxis(
-		glm::radians(7.0f * std::sin(wobble * 2.0f * 2.0f * float(M_PI))),
-		glm::vec3(0.0f, 0.0f, 1.0f)
-	);
-	lower_leg->rotation = lower_leg_base_rotation * glm::angleAxis(
-		glm::radians(10.0f * std::sin(wobble * 3.0f * 2.0f * float(M_PI))),
-		glm::vec3(0.0f, 0.0f, 1.0f)
-	);
-
-	//move sound to follow leg tip position:
-	leg_tip_loop->set_position(get_leg_tip_position(), 1.0f / 60.0f);
-
-	//move camera:
-	{
-
-		//combine inputs into a move:
-		constexpr float PlayerSpeed = 30.0f;
-		glm::vec2 move = glm::vec2(0.0f);
-		if (left.pressed && !right.pressed) move.x =-1.0f;
-		if (!left.pressed && right.pressed) move.x = 1.0f;
-		if (down.pressed && !up.pressed) move.y =-1.0f;
-		if (!down.pressed && up.pressed) move.y = 1.0f;
-
-		//make it so that moving diagonally doesn't go faster:
-		if (move != glm::vec2(0.0f)) move = glm::normalize(move) * PlayerSpeed * elapsed;
-
-		glm::mat4x3 frame = camera->transform->make_local_to_parent();
-		glm::vec3 right = frame[0];
-		//glm::vec3 up = frame[1];
-		glm::vec3 forward = -frame[2];
-
-		camera->transform->position += move.x * right + move.y * forward;
+	//add upcoming beats to active
+	while (beats.size() > 0 && timer >= beats.front() - 0.6f) {
+		//std::cout << "timer says: " << timer;
+		//std::cout << "beat is: " << beats.front() << "\n";
+		active_beats.push_back(beats.front());
+		beats.pop_front();
+		if (active_beats.size() > 9) {
+			active_beats.pop_back();
+			continue;
+		}
+		int rindex = rand() % keys.size(); //*select_randomly(keys.begin(), keys.end());
+		keymap.push_back(keys[rindex]);
+		keys.erase(keys.begin() + rindex);
 	}
 
-	{ //update listener to camera position:
-		glm::mat4x3 frame = camera->transform->make_local_to_parent();
-		glm::vec3 right = frame[0];
-		glm::vec3 at = frame[3];
-		Sound::listener.set_position_right(at, right, 1.0f / 60.0f);
+	/*
+	std::cout << "Active beats: \n";
+	for (uint32_t i = 0; i < active_beats.size(); ++i) {
+		std::cout << active_beats[i] << " ,";
+		std::cout << "Key: " << keymap[i] << "\n";
+	}*/
+
+
+	//remove old beats from active
+	while (active_beats.size() > 0 && timer >= active_beats.front() + 0.6f) {
+		if (keycolors[keymap.front()].z == 255) bad++; //if blue channel still exists
+		keycolors[keymap.front()] = glm::u8vec4(255, 255, 255, 0); //reset color
+		keys.push_back(keymap.front()); //return key to available
+		keymap.pop_front();
+		active_beats.pop_front();
 	}
 
+	//sanity
+	if (active_beats.size() > 9) throw std::runtime_error("More than 9 active beats");;
+	if (active_beats.size() != keymap.size()) throw std::runtime_error("Active beat size and keymap size do not match");
+	if (keymap.size() + keys.size() != 9) throw std::runtime_error("Used keymaps and remaining keys don't sum to 9");;
+
+	for (uint32_t i = 0; i < active_beats.size(); ++i) {
+		int button_index = keymap[i];
+		float diff = fabs(active_beats[i] - timer);
+		if (pressed[button_index] && keycolors[button_index].z == 255) {
+			if (diff < 0.2f) {
+				perfect++;
+				keycolors[button_index] = glm::u8vec4(0, 255, 0, keycolors[button_index].z);
+			}
+			else if (diff < 0.5f) {
+				good++;
+				keycolors[button_index] = glm::u8vec4(255, 255, 0, keycolors[button_index].z);
+			}
+			else {
+				bad++;
+				keycolors[button_index] = glm::u8vec4(255, 0, 0, keycolors[button_index].z);
+			}
+		}	
+		keycolors[button_index] = glm::u8vec4(keycolors[button_index].x, keycolors[button_index].y, keycolors[button_index].z, 255 - (int)(diff/1.0f * 255));
+	}
+	score = 10 * perfect + 5 * good - 1 * bad;
 	//reset button press counters:
-	left.downs = 0;
-	right.downs = 0;
-	up.downs = 0;
-	down.downs = 0;
+	memset(pressed, false, 9);
 }
 
 void PlayMode::draw(glm::uvec2 const &drawable_size) {
-	//update camera aspect ratio for drawable:
-	camera->aspect = float(drawable_size.x) / float(drawable_size.y);
+	#define HEX_TO_U8VEC4( HX ) (glm::u8vec4( (HX >> 24) & 0xff, (HX >> 16) & 0xff, (HX >> 8) & 0xff, (HX) & 0xff ))
+	const glm::u8vec4 bg_color = glm::u8vec4(41, 23, 32, 255);
+	const glm::u8vec4 fg_color = glm::u8vec4(255, 255, 255, 255);
+	const glm::u8vec4 red = glm::u8vec4(255, 0, 0, 255);
+	const glm::u8vec4 green = glm::u8vec4(0, 255, 0, 255);
+	const glm::u8vec4 yellow = glm::u8vec4(255, 255, 0, 255);
+	#undef HEX_TO_U8VEC4
 
-	//set up light type and position for lit_color_texture_program:
-	// TODO: consider using the Light(s) in the scene to do this
-	glUseProgram(lit_color_texture_program->program);
-	glUniform1i(lit_color_texture_program->LIGHT_TYPE_int, 1);
-	glUniform3fv(lit_color_texture_program->LIGHT_DIRECTION_vec3, 1, glm::value_ptr(glm::vec3(0.0f, 0.0f,-1.0f)));
-	glUniform3fv(lit_color_texture_program->LIGHT_ENERGY_vec3, 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 0.95f)));
+	//other useful drawing constants:
+	const float wall_radius = 0.05f;
+	const float shadow_offset = 0.07f;
+	const float padding = 0.14f; //padding between outside of walls and edge of window
+
+	//---- compute vertices to draw ----
+
+	//vertices will be accumulated into this list and then uploaded+drawn at the end of this function:
+	std::vector< Vertex > vertices;
+
+	//inline helper function for rectangle drawing:
+	//hooray rectangles
+	auto draw_rectangle = [&vertices](glm::vec2 const& center, glm::vec2 const& radius, glm::u8vec4 const& color) {
+		//draw rectangle as two CCW-oriented triangles:
+		vertices.emplace_back(glm::vec3(center.x - radius.x, center.y - radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+		vertices.emplace_back(glm::vec3(center.x + radius.x, center.y - radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+		vertices.emplace_back(glm::vec3(center.x + radius.x, center.y + radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+
+		vertices.emplace_back(glm::vec3(center.x - radius.x, center.y - radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+		vertices.emplace_back(glm::vec3(center.x + radius.x, center.y + radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+		vertices.emplace_back(glm::vec3(center.x - radius.x, center.y + radius.y, 0.0f), color, glm::vec2(0.5f, 0.5f));
+	};
+
+	//solid objects:
+
+	//walls:
+	draw_rectangle(glm::vec2(-playable_area_dim.x - wall_radius, 0.0f), glm::vec2(wall_radius, playable_area_dim.y + 2.0f * wall_radius), fg_color);
+	draw_rectangle(glm::vec2(playable_area_dim.x + wall_radius, 0.0f), glm::vec2(wall_radius, playable_area_dim.y + 2.0f * wall_radius), fg_color);
+	draw_rectangle(glm::vec2(0.0f, -playable_area_dim.y - wall_radius), glm::vec2(playable_area_dim.x, wall_radius), fg_color);
+	draw_rectangle(glm::vec2(0.0f, playable_area_dim.y + wall_radius), glm::vec2(playable_area_dim.x, wall_radius), fg_color);
+
+	//buttons:
+	for (uint32_t i = 0; i < 3; ++i) {
+		for (uint32_t j = 0; j < 3; ++j) {
+			draw_rectangle(glm::vec2(-playable_area_dim.x + button_dim.x + offset + ((offset + 2 * button_dim.x) * j), 
+				playable_area_dim.y - button_dim.y - offset - ((offset + 2 * button_dim.y) * i)), 
+				button_dim, keycolors[i * 3 + j]);
+		}
+	}
+
+	//------ compute court-to-window transform ------
+
+	//compute area that should be visible:
+	glm::vec2 scene_min = glm::vec2(
+		-playable_area_dim.x - 2.0f * wall_radius - padding,
+		-playable_area_dim.y - 2.0f * wall_radius - padding
+	);
+	glm::vec2 scene_max = glm::vec2(
+		playable_area_dim.x + 2.0f * wall_radius + padding,
+		playable_area_dim.y + 2.0f * wall_radius + padding
+	);
+
+	//compute window aspect ratio:
+	float aspect = drawable_size.x / float(drawable_size.y);
+	//we'll scale the x coordinate by 1.0 / aspect to make sure things stay square.
+
+	//compute scale factor for court given that...
+	float scale = std::min(
+		(2.0f * aspect) / (scene_max.x - scene_min.x), //... x must fit in [-aspect,aspect] ...
+		(2.0f) / (scene_max.y - scene_min.y) //... y must fit in [-1,1].
+	);
+
+	glm::vec2 center = 0.5f * (scene_max + scene_min);
+
+	//build matrix that scales and translates appropriately:
+	glm::mat4 court_to_clip = glm::mat4(
+		glm::vec4(scale / aspect, 0.0f, 0.0f, 0.0f),
+		glm::vec4(0.0f, scale, 0.0f, 0.0f),
+		glm::vec4(0.0f, 0.0f, 1.0f, 0.0f),
+		glm::vec4(-center.x * (scale / aspect), -center.y * scale, 0.0f, 1.0f)
+	);
+	//NOTE: glm matrices are specified in *Column-Major* order,
+	// so each line above is specifying a *column* of the matrix(!)
+
+	//also build the matrix that takes clip coordinates to court coordinates (used for mouse handling):
+	clip_to_court = glm::mat3x2(
+		glm::vec2(aspect / scale, 0.0f),
+		glm::vec2(0.0f, 1.0f / scale),
+		glm::vec2(center.x, center.y)
+	);
+
+	//---- actual drawing ----
+
+	//clear the color buffer:
+	glClearColor(bg_color.r / 255.0f, bg_color.g / 255.0f, bg_color.b / 255.0f, bg_color.a / 255.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	//use alpha blending:
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	//don't use the depth test:
+	glDisable(GL_DEPTH_TEST);
+
+	//upload vertices to vertex_buffer:
+	glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer); //set vertex_buffer as current
+	glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertices[0]), vertices.data(), GL_STREAM_DRAW); //upload vertices array
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	//set color_texture_program as current program:
+	glUseProgram(color_texture_program.program);
+
+	//upload OBJECT_TO_CLIP to the proper uniform location:
+	glUniformMatrix4fv(color_texture_program.OBJECT_TO_CLIP_mat4, 1, GL_FALSE, glm::value_ptr(court_to_clip));
+
+	//use the mapping vertex_buffer_for_color_texture_program to fetch vertex data:
+	glBindVertexArray(vertex_buffer_for_color_texture_program);
+
+	//bind the solid white texture to location zero so things will be drawn just with their colors:
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, white_tex);
+
+	//run the OpenGL pipeline:
+	glDrawArrays(GL_TRIANGLES, 0, GLsizei(vertices.size()));
+
+	//unbind the solid white texture:
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	//reset vertex array to none:
+	glBindVertexArray(0);
+
+	//reset current program to none:
 	glUseProgram(0);
-
-	glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
-	glClearDepth(1.0f); //1.0 is actually the default value to clear the depth buffer to, but FYI you can change it.
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LESS); //this is the default depth comparison function, but FYI you can change it.
-
-	scene.draw(*camera);
 
 	{ //use DrawLines to overlay some text:
 		glDisable(GL_DEPTH_TEST);
@@ -217,20 +391,24 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 		));
 
 		constexpr float H = 0.09f;
-		lines.draw_text("Mouse motion rotates camera; WASD moves; escape ungrabs mouse",
+		lines.draw_text("Score: " + std::to_string(score),
 			glm::vec3(-aspect + 0.1f * H, -1.0 + 0.1f * H, 0.0),
 			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
-			glm::u8vec4(0x00, 0x00, 0x00, 0x00));
-		float ofs = 2.0f / drawable_size.y;
-		lines.draw_text("Mouse motion rotates camera; WASD moves; escape ungrabs mouse",
-			glm::vec3(-aspect + 0.1f * H + ofs, -1.0 + + 0.1f * H + ofs, 0.0),
+			glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		lines.draw_text("Perfect: " + std::to_string(perfect),
+			glm::vec3(-aspect + 0.1f * H, 1.0 - 1.1f * H, 0.0),
 			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
-			glm::u8vec4(0xff, 0xff, 0xff, 0x00));
+			glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		lines.draw_text("Good: " + std::to_string(good),
+			glm::vec3(-aspect + 0.1f * H, 1.0 - 2.2f * H, 0.0),
+			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
+			glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		lines.draw_text("Miss: " + std::to_string(bad),
+			glm::vec3(-aspect + 0.1f * H, 1.0 - 3.3f * H, 0.0),
+			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
+			glm::u8vec4(0xff, 0xff, 0xff, 0xff));
 	}
-	GL_ERRORS();
-}
 
-glm::vec3 PlayMode::get_leg_tip_position() {
-	//the vertex position here was read from the model in blender:
-	return lower_leg->make_local_to_world() * glm::vec4(-1.26137f, -11.861f, 0.0f, 1.0f);
+	GL_ERRORS(); //PARANOIA: print errors just in case we did something wrong.
+
 }
