@@ -26,6 +26,8 @@
 #include <memory>
 #include <algorithm>
 #include <exception>
+#include <string>
+#include <cstring>
 
 #ifdef _WIN32
 extern "C" { uint32_t GetACP(); }
@@ -107,7 +109,8 @@ int main(int argc, char **argv) {
 	//SDL_ShowCursor(SDL_DISABLE);
 
 	if (argc > 2) throw std::runtime_error("Usage: game.exe <path_to_.wav_or_.opus_file>");
-	char* musicfile = "Bit Bit Loop.wav";
+	std::string musicfile_str = "Bit Bit Loop.wav";
+	char* musicfile = &musicfile_str[0];
 	if (argc == 2) musicfile = argv[1];
 
 	//------------ init sound --------------

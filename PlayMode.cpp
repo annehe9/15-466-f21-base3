@@ -252,14 +252,10 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 	#define HEX_TO_U8VEC4( HX ) (glm::u8vec4( (HX >> 24) & 0xff, (HX >> 16) & 0xff, (HX >> 8) & 0xff, (HX) & 0xff ))
 	const glm::u8vec4 bg_color = glm::u8vec4(41, 23, 32, 255);
 	const glm::u8vec4 fg_color = glm::u8vec4(255, 255, 255, 255);
-	const glm::u8vec4 red = glm::u8vec4(255, 0, 0, 255);
-	const glm::u8vec4 green = glm::u8vec4(0, 255, 0, 255);
-	const glm::u8vec4 yellow = glm::u8vec4(255, 255, 0, 255);
 	#undef HEX_TO_U8VEC4
 
 	//other useful drawing constants:
 	const float wall_radius = 0.05f;
-	const float shadow_offset = 0.07f;
 	const float padding = 0.14f; //padding between outside of walls and edge of window
 
 	//---- compute vertices to draw ----
