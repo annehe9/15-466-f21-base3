@@ -21,7 +21,9 @@ The bpm is limited to 240, or 4 notes per second. This is to make it playable, s
 What I learned out of this game was 1. why a rhythm game with randomly placed beats sucks 2. why rhythm games don't use keyboard controls for more than 4 buttons.
 If you want the notes to be somewhat predictable comment out the srand on line 112.
 
-## Sources: Used 15-466 Game 3 and Game 0 base code.
+## Sources: 
+
+Used 15-466 Game 3 and Game 0 base code.
 
 Bit Bit Loop by Kevin MacLeod, found on freepd.com. Creative Commons 0.
 
